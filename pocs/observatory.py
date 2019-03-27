@@ -140,6 +140,10 @@ class Observatory(PanBase):
     def has_dome(self):
         return self.dome is not None
 
+    @property
+    def exist_dome(self):
+        return 'dome' not in locals()
+
 
 ##########################################################################
 # Device Getters/Setters
@@ -611,6 +615,10 @@ class Observatory(PanBase):
             self.logger.info('Closed dome')
         return self.dome.close()
 
+    def remove_dome(self):
+        """Removes the dome"""
+        del self.dome
+
 ##########################################################################
 # Private Methods
 ##########################################################################
@@ -724,8 +732,26 @@ class Observatory(PanBase):
 
         self.logger.debug('Mount created')
 
+    def _remove_mount(self, mount_info=None):
+        """Removes a mount object.
+        """
+        if mount_info is None:
+            mount_info = self.config.get('mount')
+
+        if 'mount' in self.config.get('simulator', []):
+            model = 'simulator'
+        else:
+            model = mount_info.get('brand')
+
+        self.logger.debug('Removing mount: {}'.format(model))
+
+        del self.mount
+
+        self.logger.debug('Mount removed')
+
     def _create_scheduler(self):
         """ Sets up the scheduler that will be used by the observatory """
+        del self.scheduler
 
         scheduler_config = self.config.get('scheduler', {})
         scheduler_type = scheduler_config.get('type', 'dispatch')
@@ -767,3 +793,10 @@ class Observatory(PanBase):
         else:
             raise error.NotFound(
                 msg="Fields file does not exist: {}".format(fields_file))
+
+    def _remove_scheduler(self):
+        """ Deletes the scheduler """
+
+        self.logger.debug('Removing scheduler')
+        del self.scheduler
+        self.logger.debug('Scheduler removed')

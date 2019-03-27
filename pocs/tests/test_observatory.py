@@ -379,3 +379,10 @@ def test_operate_dome(config_with_simulated_dome):
     assert observatory.open_dome()
     assert observatory.dome.is_open
     assert not observatory.dome.is_closed
+
+def test_remove_dome(observatory):
+    # Doesn't have a dome, and dome operations always report success.
+    assert not observatory.has_dome
+    assert observatory.open_dome()
+    observatory.remove_dome()
+    assert observatory.exist_dome
