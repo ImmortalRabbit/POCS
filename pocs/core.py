@@ -53,10 +53,10 @@ class POCS(PanStateMachine, PanBase):
             observatory,
             state_machine_file=None,
             messaging=False,
-            **kwargs):
+            *args, **kwargs):
 
         # Explicitly call the base classes in the order we want
-        PanBase.__init__(self, **kwargs)
+        PanBase.__init__(self, *args, **kwargs)
 
         assert isinstance(observatory, Observatory)
 
@@ -77,6 +77,7 @@ class POCS(PanStateMachine, PanBase):
         if state_machine_file is None:
             state_machine_file = self.config.get('state_machine', 'simple_state_table')
 
+        self.logger.info(f'Making a POCS state machine from {state_machine_file}')
         PanStateMachine.__init__(self, state_machine_file, **kwargs)
 
         # Add observatory object, which does the bulk of the work
@@ -226,8 +227,7 @@ class POCS(PanStateMachine, PanBase):
         """
         if self.connected:
             self.say("I'm powering down")
-            self.logger.info(
-                "Shutting down {}, please be patient and allow for exit.", self.name)
+            self.logger.info(f'Shutting down {self.name}, please be patient and allow for exit.')
 
             if not self.observatory.close_dome():
                 self.logger.critical('Unable to close dome!')
@@ -276,7 +276,7 @@ class POCS(PanStateMachine, PanBase):
 # Safety Methods
 ##################################################################################################
 
-    def is_safe(self, no_warning=False, horizon='observe'):
+    def is_safe(self, no_warning=False, horizon='observe', **kwargs):
         """Checks the safety flag of the system to determine if safe.
 
         This will check the weather station as well as various other environmental
@@ -376,6 +376,9 @@ class POCS(PanStateMachine, PanBase):
         # Get current weather readings from database
         try:
             record = self.db.get_current('weather')
+            if record is None:
+                return False
+
             is_safe = record['data'].get('safe', False)
 
             timestamp = record['date'].replace(tzinfo=None)  # current_time is timezone naive
@@ -391,24 +394,37 @@ class POCS(PanStateMachine, PanBase):
         except Exception as e:  # pragma: no cover
             self.logger.error("Error checking weather: {}", e)
         else:
-            if age > stale:
+            if age >= stale:
                 self.logger.warning("Weather record looks stale, marking unsafe.")
                 is_safe = False
 
         return is_safe
 
-    def has_free_space(self, required_space=0.25 * u.gigabyte):
+    def has_free_space(self, required_space=0.25 * u.gigabyte, low_space_percent=1.5):
         """Does hard drive have disk space (>= 0.5 GB)
 
         Args:
             required_space (u.gigabyte, optional): Amount of free space required
-            for operation
+                for operation
+            low_space_percent (float, optional): Give warning if space is less
+                than this times the required space, default 1.5, i.e.,
+                the logs will show a warning at `.25 GB * 1.5 = 0.375 GB`.
 
         Returns:
             bool: True if enough space
         """
+        req_space = required_space.to(u.gigabyte)
         free_space = get_free_space()
-        return free_space.value >= required_space.to(u.gigabyte).value
+
+        space_is_low = free_space.value <= (req_space.value * low_space_percent)
+        has_space = free_space.value >= req_space.value
+
+        if not has_space:
+            self.logger.error(f'No disk space: Free {free_space:.02f}\tReq: {req_space:.02f}')
+        elif space_is_low:
+            self.logger.warning(f'Low disk space: Free {free_space:.02f}\tReq: {req_space:.02f}')
+
+        return has_space
 
     def has_ac_power(self, stale=90):
         """Check for system AC power.
@@ -439,7 +455,14 @@ class POCS(PanStateMachine, PanBase):
         # Get current power readings from database
         try:
             record = self.db.get_current('power')
-            has_power = bool(record['data'].get('main', False))
+            if record is None:
+                self.logger.warning(f'No mains "power" reading found in database.')
+
+            # Legacy control boards have `main`.
+            has_power = False  # Assume not
+            for power_key in ['main', 'mains']:
+                with suppress(KeyError):
+                    has_power = bool(record['data'][power_key])
 
             timestamp = record['date'].replace(tzinfo=None)  # current_time is timezone naive
             age = (current_time().datetime - timestamp).total_seconds()
@@ -468,7 +491,7 @@ class POCS(PanStateMachine, PanBase):
 # Convenience Methods
 ##################################################################################################
 
-    def sleep(self, delay=2.5, with_status=True):
+    def sleep(self, delay=2.5, with_status=True, **kwargs):
         """ Send POCS to sleep
 
         Loops for `delay` number of seconds. If `delay` is more than 10.0 seconds,
@@ -577,14 +600,14 @@ class POCS(PanStateMachine, PanBase):
             # Sleep for a little bit.
             time.sleep(sleep_delay)
 
-    def wait_until_safe(self):
+    def wait_until_safe(self, **kwargs):
         """ Waits until weather is safe.
 
         This will wait until a True value is returned from the safety check,
         blocking until then.
         """
-        while not self.is_safe(no_warning=True):
-            self.sleep(delay=self._safe_delay)
+        while not self.is_safe(no_warning=True, **kwargs):
+            self.sleep(delay=self._safe_delay, **kwargs)
 
 ##################################################################################################
 # Class Methods
@@ -637,7 +660,7 @@ class POCS(PanStateMachine, PanBase):
                 msg_obj = q.get_nowait()
                 call_method = msg_obj.get('message', '')
                 # Lookup and call the method
-                self.logger.info('Message received: {} {}'.format(queue_type, call_method))
+                self.logger.critical(f'Message received: {queue_type} {call_method}')
                 cmd_dispatch[queue_type][call_method]()
             except queue.Empty:
                 break
@@ -649,12 +672,12 @@ class POCS(PanStateMachine, PanBase):
                 break
 
     def _interrupt_and_park(self):
-        self.logger.info('Park interrupt received')
+        self.logger.critical('Park interrupt received')
         self._interrupted = True
         self.park()
 
     def _interrupt_and_shutdown(self):
-        self.logger.warning('Shutdown command received')
+        self.logger.critical('Shutdown command received')
         self._interrupted = True
         self.power_down()
 
@@ -670,13 +693,11 @@ class POCS(PanStateMachine, PanBase):
                 pass
 
         cmd_forwarder_process = multiprocessing.Process(
-            target=create_forwarder, args=(
-                cmd_port,), name='CmdForwarder')
+            target=create_forwarder, args=(cmd_port,), name='CmdForwarder')
         cmd_forwarder_process.start()
 
         msg_forwarder_process = multiprocessing.Process(
-            target=create_forwarder, args=(
-                msg_port,), name='MsgForwarder')
+            target=create_forwarder, args=(msg_port,), name='MsgForwarder')
         msg_forwarder_process.start()
 
         self._do_cmd_check = True

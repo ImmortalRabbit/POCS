@@ -1,4 +1,5 @@
 import threading
+from abc import ABCMeta, abstractmethod
 
 from astropy import units as u
 
@@ -7,7 +8,7 @@ from pocs.utils import listify
 from pocs.utils import error
 
 
-class AbstractFilterWheel(PanBase):
+class AbstractFilterWheel(PanBase, metaclass=ABCMeta):
     """
     Base class for all filter wheels
 
@@ -21,6 +22,7 @@ class AbstractFilterWheel(PanBase):
             assumed. Default is None (no timeout).
         serial_number (str, optional): serial number of the filter wheel, default 'XXXXXX'
     """
+
     def __init__(self,
                  name='Generic Filter Wheel',
                  model='simulator',
@@ -47,6 +49,9 @@ class AbstractFilterWheel(PanBase):
             self._timeout = timeout
         self._serial_number = serial_number
         self._connected = False
+        # Some filter wheels needs this to track whether they are moving or not.
+        self._move_event = threading.Event()
+        self._move_event.set()
 
         self.logger.debug('Filter wheel created: {}'.format(self))
 
@@ -75,9 +80,15 @@ class AbstractFilterWheel(PanBase):
         return self._connected
 
     @property
+    @abstractmethod
     def is_moving(self):
         """ Is the filterwheel currently moving """
         raise NotImplementedError
+
+    @property
+    def is_ready(self):
+        # A filterwheel is 'ready' if it is connected and isn't currently moving.
+        return self.is_connected and not self.is_moving
 
     @property
     def camera(self):
@@ -106,6 +117,7 @@ class AbstractFilterWheel(PanBase):
         return self._n_positions
 
     @property
+    @abstractmethod
     def position(self):
         """ Current integer position of the filter wheel """
         raise NotImplementedError
@@ -128,13 +140,18 @@ class AbstractFilterWheel(PanBase):
     def current_filter(self, filter_name):
         self.move_to(filter_name, blocking=True)
 
+    @property
+    def is_unidirectional(self):
+        raise NotImplementedError
+
 ##################################################################################################
 # Methods
 ##################################################################################################
 
+    @abstractmethod
     def connect(self):
         """ Connect to filter wheel """
-        raise NotImplementError
+        raise NotImplementedError
 
     def move_to(self, position, blocking=False):
         """
@@ -158,6 +175,7 @@ class AbstractFilterWheel(PanBase):
             and a serial number, e.g. the following selects a g band filter without having to
             know its full name.
 
+            >>> from pocs.filterwheel.filterwheel import AbstractFilterWheel as FilterWheel
             >>> fw = FilterWheel(filter_names=['u_12', 'g_04', 'r_09', 'i_20', 'z_07'])
             >>> fw_event = fw.move_to('g')
             >>> fw_event.wait()
@@ -165,31 +183,36 @@ class AbstractFilterWheel(PanBase):
             'g_04'
         """
         assert self.is_connected, self.logger.error("Filter wheel must be connected to move")
+
         if self.camera and self.camera.is_exposing:
-            msg = "Attempt to move filter wheel {} while camera is exposing, ignoring.".format(self)
+            msg = f'Attempt to move filter wheel {self} while camera is exposing, ignoring.'
+            raise error.PanError(msg)
+
+        if self.is_moving:
+            msg = f'Attempt to move filter wheel {self} while already moving, ignoring.'
             raise error.PanError(msg)
 
         position = self._parse_position(position)
         self.logger.info("Moving {} to position {} ({})".format(
             self, position, self.filter_names[position - 1]))
-        move_event = threading.Event()
 
         if position == self.position:
-            # Don't go nowhere
-            move_event.set()
-            return move_event
+            # Already at requested position, don't go nowhere.
+            return self._move_event
 
-        self._move_to(position, move_event)  # Private method to actually perform the move.
+        self._move_event.clear()
+        self._move_to(position)  # Private method to actually perform the move.
 
         if blocking:
-            move_event.wait()
+            self._move_event.wait()
 
-        return move_event
+        return self._move_event
 
 ##################################################################################################
 # Private methods
 ##################################################################################################
 
+    @abstractmethod
     def _move_to(self, position, move_event):
         raise NotImplementedError
 
@@ -225,7 +248,7 @@ class AbstractFilterWheel(PanBase):
                 raise ValueError(msg)
 
         if int_position < 1 or int_position > self.n_positions:
-            msg = "Position must be between 1 and {}, got {}".format(self.n_positions, int_position)
+            msg = f'Position must be between 1 and {self.n_positions}, got {int_position}'
             self.logger.error(msg)
             raise ValueError(msg)
 

@@ -23,7 +23,7 @@ class AbstractSDKDriver(PanBase, metaclass=ABCMeta):
             library_path (str, optional): path to the libary e.g. '/usr/local/lib/libASICamera2.so'
 
         Raises:
-            pocs.utils.error.NotFound: raised if library_path not given & find_libary fails to
+            pocs.utils.error.NotFound: raised if library_path not given & find_library fails to
                 locate the library.
             OSError: raises if the ctypes.CDLL loader cannot load the library.
         """
@@ -43,14 +43,12 @@ class AbstractSDKDriver(PanBase, metaclass=ABCMeta):
     @abstractmethod
     def get_SDK_version(self):
         """ Get the version of the SDK """
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover
 
     @abstractmethod
-    def get_cameras(self):
-        """Convenience function to get a dictionary of all currently connected camera UIDs
-        and their corresponding device nodes/handles/camera IDs.
-        """
-        raise NotImplementedError
+    def get_devices(self):
+        """Get connected device UIDs and corresponding device nodes/handles/IDs."""
+        raise NotImplementedError  # pragma: no cover
 
 
 class AbstractSDKCamera(AbstractCamera):
@@ -63,7 +61,7 @@ class AbstractSDKCamera(AbstractCamera):
                  driver=AbstractSDKDriver,
                  library_path=None,
                  filter_type=None,
-                 set_point=None,
+                 target_temperature=None,
                  *args, **kwargs):
         # Would usually use self.logger but that won't exist until after calling super().__init__(),
         # and don't want to do that until after the serial number and port have both been determined
@@ -92,7 +90,7 @@ class AbstractSDKCamera(AbstractCamera):
         if not my_class._cameras:
             # No cached camera details, need to probe for connected cameras
             # This will raise a PanError if there are no cameras.
-            my_class._cameras = my_class._driver.get_cameras()
+            my_class._cameras = my_class._driver.get_devices()
             logger.debug("Connected {}s: {}".format(name, my_class._cameras))
 
         if serial_number in my_class._cameras:
@@ -118,9 +116,15 @@ class AbstractSDKCamera(AbstractCamera):
             # upstream of the CCD. Can be set manually here, or handled by a filterwheel attribute.
             self._filter_type = filter_type
 
-        if set_point is not None:
-            self.ccd_set_point = set_point
-            self.ccd_cooling_enabled = True
+        if target_temperature is not None:
+            if self.is_cooled_camera:
+                self.target_temperature = target_temperature
+                self.cooling_enabled = True
+                msg = f"Set target temperature {target_temperature} & enabled cooling on {self}."
+                self.logger.debug(msg)
+            else:
+                msg = "Setting a target temperature on uncooled camera {}".format(self)
+                self.logger.warning(msg)
 
     def __del__(self):
         """ Attempt some clean up """
@@ -137,6 +141,11 @@ class AbstractSDKCamera(AbstractCamera):
         return self._info
 
     # Methods
+
+    def _create_fits_header(self, seconds, dark):
+        header = super()._create_fits_header(seconds, dark)
+        header.set('CAM-SDK', type(self)._driver.version, 'Camera SDK version')
+        return header
 
     def __str__(self):
         # SDK cameras don't have a port so just include the serial number in the string

@@ -1,33 +1,26 @@
 import os
-import matplotlib.colors as colours
-from matplotlib import cm as colormap
-
-from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-from matplotlib.figure import Figure
-
-from astropy.modeling import models, fitting
-from scipy.ndimage import binary_dilation
-
-import numpy as np
-
-from copy import copy
+from abc import ABCMeta
+from abc import abstractmethod
 from threading import Event
 from threading import Thread
 
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from matplotlib.figure import Figure
+import matplotlib.colors as colours
+
+import numpy as np
+from scipy.ndimage import binary_dilation
+from astropy.modeling import models
+from astropy.modeling import fitting
 
 from pocs.base import PanBase
 from pocs.utils import current_time
 from pocs.utils.images import focus as focus_utils
-
-palette = copy(colormap.inferno)
-palette.set_over('w', 1.0)
-palette.set_under('k', 1.0)
-palette.set_bad('g', 1.0)
+from pocs.utils.images import get_palette
 
 
-class AbstractFocuser(PanBase):
-    """
-    Base class for all focusers
+class AbstractFocuser(PanBase, metaclass=ABCMeta):
+    """Base class for all focusers.
 
     Args:
         name (str, optional): name of the focuser
@@ -83,23 +76,15 @@ class AbstractFocuser(PanBase):
         else:
             self._position = int(initial_position)
 
-        if autofocus_range:
-            self.autofocus_range = (int(autofocus_range[0]), int(autofocus_range[1]))
-        else:
-            self.autofocus_range = None
-
-        if autofocus_step:
-            self.autofocus_step = (int(autofocus_step[0]), int(autofocus_step[1]))
-        else:
-            self.autofocus_step = None
-
-        self.autofocus_seconds = autofocus_seconds
-        self.autofocus_size = autofocus_size
-        self.autofocus_keep_files = autofocus_keep_files
-        self.autofocus_take_dark = autofocus_take_dark
-        self.autofocus_merit_function = autofocus_merit_function
-        self.autofocus_merit_function_kwargs = autofocus_merit_function_kwargs
-        self.autofocus_mask_dilations = autofocus_mask_dilations
+        self._set_autofocus_parameters(autofocus_range,
+                                       autofocus_step,
+                                       autofocus_seconds,
+                                       autofocus_size,
+                                       autofocus_keep_files,
+                                       autofocus_take_dark,
+                                       autofocus_merit_function,
+                                       autofocus_merit_function_kwargs,
+                                       autofocus_mask_dilations)
 
         self._camera = camera
 
@@ -145,20 +130,31 @@ class AbstractFocuser(PanBase):
         else:
             self._camera = camera
 
-    @property
+    @abstractmethod
     def min_position(self):
         """ Get position of close limit of focus travel, in encoder units """
         raise NotImplementedError
 
-    @property
+    @abstractmethod
     def max_position(self):
         """ Get position of far limit of focus travel, in encoder units """
         raise NotImplementedError
+
+    @abstractmethod
+    def is_moving(self):
+        """ True if the focuser is currently moving. """
+        raise NotImplementedError
+
+    @property
+    def is_ready(self):
+        # A focuser is 'ready' if it is not currently moving.
+        return not self.is_moving
 
 ##################################################################################################
 # Methods
 ##################################################################################################
 
+    @abstractmethod
     def move_to(self, position):
         """ Move focuser to new encoder position """
         raise NotImplementedError
@@ -488,7 +484,7 @@ class AbstractFocuser(PanBase):
 
             ax1 = fig.add_subplot(3, 1, 1)
             im1 = ax1.imshow(initial_thumbnail, interpolation='none',
-                             cmap=palette, norm=colours.LogNorm())
+                             cmap=get_palette(), norm=colours.LogNorm())
             fig.colorbar(im1)
             ax1.set_title('Initial focus position: {}'.format(initial_focus))
 
@@ -516,7 +512,7 @@ class AbstractFocuser(PanBase):
 
             ax3 = fig.add_subplot(3, 1, 3)
             im3 = ax3.imshow(final_thumbnail, interpolation='none',
-                             cmap=palette, norm=colours.LogNorm())
+                             cmap=get_palette(), norm=colours.LogNorm())
             fig.colorbar(im3)
             ax3.set_title('Final focus position: {}'.format(final_focus))
             plot_path = os.path.join(file_path_root, '{}_focus.png'.format(focus_type))
@@ -538,6 +534,35 @@ class AbstractFocuser(PanBase):
             focus_event.set()
 
         return initial_focus, final_focus
+
+    def _set_autofocus_parameters(self,
+                                  autofocus_range,
+                                  autofocus_step,
+                                  autofocus_seconds,
+                                  autofocus_size,
+                                  autofocus_keep_files,
+                                  autofocus_take_dark,
+                                  autofocus_merit_function,
+                                  autofocus_merit_function_kwargs,
+                                  autofocus_mask_dilations):
+        # Moved to a separate private method to make it possible to override.
+        if autofocus_range:
+            self.autofocus_range = (int(autofocus_range[0]), int(autofocus_range[1]))
+        else:
+            self.autofocus_range = None
+
+        if autofocus_step:
+            self.autofocus_step = (int(autofocus_step[0]), int(autofocus_step[1]))
+        else:
+            self.autofocus_step = None
+
+        self.autofocus_seconds = autofocus_seconds
+        self.autofocus_size = autofocus_size
+        self.autofocus_keep_files = autofocus_keep_files
+        self.autofocus_take_dark = autofocus_take_dark
+        self.autofocus_merit_function = autofocus_merit_function
+        self.autofocus_merit_function_kwargs = autofocus_merit_function_kwargs
+        self.autofocus_mask_dilations = autofocus_mask_dilations
 
     def _add_fits_keywords(self, header):
         header.set('FOC-NAME', self.name, 'Focuser name')
